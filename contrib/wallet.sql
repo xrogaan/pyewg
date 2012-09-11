@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS `api_keys` (
 CREATE TABLE IF NOT EXISTS `wallet` (
     `id` INT(11) NOT NULL AUTO_INCREMENT,
     `apiId` INT(11) NOT NULL,
-    `cId` INT(11) NOT NULL
-    `datetime` VARCHAR(19) NOT NULL,
+    `cId` INT(11) NOT NULL,
+    `datetime` DATETIME NOT NULL,
     `amount` FLOAT(13,2) NOT NULL,
     `balance` FLOAT(15,2) NOT NULL,
     PRIMARY KEY (id), KEY(apiId, cId)
