@@ -98,6 +98,14 @@ class WalletHandler(object):
         cur.close()
         return rowcount
 
+    def getLastKnownDBDate(self):
+        cur = self.con.cursor()
+        cur.execute('SELECT MAX(datetime) AS `date` FROM wallet WHERE apiId=%s',
+                    self.apiId)
+        date = cur.fetchone()
+        cur.close()
+        return date[0]
+
     def fetchXMLWalletData(self, lastDate=0):
         """
         By default, will fetch transactions older than the last transaction
@@ -117,7 +125,7 @@ class WalletHandler(object):
 
         if lastPollDate is not None:
             lastPollDate = datetime.strptime(lastPollDate, TIMEFORMAT)
-            if lastPollDate < cu:
+            if lastPollDate <= cu:
                 logger.info('XML Cached time not expired, halting.')
                 return
 
@@ -127,11 +135,11 @@ class WalletHandler(object):
             if int(lastDate) > 0:
                 lastDate = datetime.fromtimestamp(lastDate)
             else:
-                lastDate = 0
+                lastDate = self.getLastKnownDBDate()
 
         for transaction in xml.findall('result/rowset/row'):
             date = datetime.strptime(transaction.attrib['date'], TIMEFORMAT)
-            if lastDate != 0 and date < lastDate:
+            if lastDate is not None and date < lastDate:
                 continue
             amount = float(transaction.attrib['amount'])
             balance = float(transaction.attrib['balance'])
