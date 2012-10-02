@@ -17,7 +17,7 @@ import yaml
 # dict over tuple:
 # con.cursor(MySQLdb.cursors.DictCursor)
 
-logging.basicConfig(filename='stderr.log', level=logging.DEBUG)
+logging.basicConfig(filename='stderr.log', filemode='w', level=logging.DEBUG)
 TIMEFORMAT = '%Y-%m-%d %H:%M:%S'
 
 class DontRedirect(urllib2.HTTPRedirectHandler):
@@ -72,13 +72,34 @@ class apiHandler(object):
 
 class WalletHandler(object):
     def __init__(self, myConnection, urlArgs, characterId, apiId, rediscp):
-        url = "https://api.eveonline.com/char/WalletJournal.xml.aspx?{}"
-        urlArgs.update({'characterID': characterId,'rowCount':100})
-        self.url = url.format(urlencode(urlArgs, doseq=1))
+        self.mdblogger = logging.getLogger('__main__.MySQLdb')
+        self._urlArgs = urlArgs
+        # max number of entries returned by the API
+        self._rowCount = 2560
         self.cid = characterId
         self.apiId = apiId
         self.con = myConnection
+        self.__page = 0        # Used to know if we are on the first xml file
+        self.__stop_paging = 0 # Set to 1 once we hit already seen refID
         self.redis = redis.Redis(connection_pool=rediscp)
+
+        # if no refID in redis, initialise
+        if not self.redis.exists('knownRefID'):
+            cur = self.con.cursor()
+            cur.execute('SELECT refID FROM wallet ORDER BY refID ASC')
+            data = cur.fetchall()
+            for refID in data:
+                self.redis.rpush('knownRefID', refID)
+
+    def getUrl(self, rowCount, refID=None):
+        url = "https://api.eveonline.com/char/WalletJournal.xml.aspx?{}"
+        self._urlArgs.update({'characterId': self.cid, 'rowCount': rowCount})
+        if refID:
+            import copy
+            xurlargs = copy.copy(self._urlArgs)
+            xurlargs.update({'fromID': refID})
+            return url.format(urlencode(xurlargs, doseq=1))
+        return url.format(urlencode(self._urlArgs, doseq=1))
 
     def insertXmlData(self):
         """
@@ -86,16 +107,30 @@ class WalletHandler(object):
         return the number of inserted row
         """
         items = list()
+        refIDs = list()
         for item in self.fetchXMLWalletData():
             item = list(item)
             item.append(self.apiId)
             items.append(item)
+            refIDs.append(item[3])
         items.reverse()
         cur = self.con.cursor()
-        cur.executemany("""INSERT INTO `wallet` (datetime, amount, balance, cId, apiId)
-                    VALUES (%s,%s,%s,%s,%s)""", items)
+
+        cur.executemany("""INSERT INTO `wallet` (datetime, amount, balance, refID, cId, apiId)
+                    VALUES (%s,%s,%s,%s,%s,%s)""", items)
         rowcount = cur.rowcount
         cur.close()
+
+        self.mdblogger.debug('{0} rows inserted'.format(rowcount))
+
+        if not self.redis.exists('knownRefID'):
+            self.redis.rpush('knownRefID', refIDs)
+        else:
+            t = self.redis.lrange('knownRefID', 0, -1)
+            diff = list(set(t) - set(refIDs))
+            if len(diff) > 0:
+                self.redis.rpush('knownRefID', *diff)
+
         return rowcount
 
     def getLastKnownDBDate(self):
@@ -106,6 +141,14 @@ class WalletHandler(object):
         cur.close()
         return date[0]
 
+    def getMostRecentRefID(self):
+        cur = self.con.cursor()
+        cur.execute('SELECT refID FROM wallet WHERE apiId=%s ORDER BY refID DESC LIMIT 1',
+                    self.apiId)
+        refID = cur.fetchone()
+        cur.close()
+        return refID[0] if refID != None else None
+
     def fetchXMLWalletData(self, lastDate=0):
         """
         By default, will fetch transactions older than the last transaction
@@ -115,38 +158,49 @@ class WalletHandler(object):
         cid: characterID
         lastDate: if set, will return only entries with date greater than
                   lastDate
-        yield (date, amount, balance, self.cid)
+        yield (date, amount, balance, refID, self.cid)
         """
         logger = logging.getLogger('__main__.WalletHandler.fetchXMLWalletData')
-        lastPollDate = self.redis.get('lastPollDate')
-        xml = getXML(self.url)
 
-        cu = datetime.strptime(xml.find('cachedUntil').text, TIMEFORMAT)
+        if self.__stop_paging:
+            logger.info('Known refID as been spotted, paging ended.')
+            return
 
-        if lastPollDate is not None:
-            lastPollDate = datetime.strptime(lastPollDate, TIMEFORMAT)
-            if lastPollDate <= cu:
+        #lastPollDate = self.redis.get('lastPollDate')
+
+        # if now isn't greater than the cached time, there is no need to check
+        # for updates
+        if self.redis.exists('cachedUntil'):
+            cu = datetime.strptime(self.redis.get('cachedUntil'), TIMEFORMAT)
+            if cu >= datetime.utcnow():
                 logger.info('XML Cached time not expired, halting.')
+                logger.debug('{0} >= {1}'.format(cu,datetime.utcnow()))
                 return
 
-        self.redis.set('lastPollDate', cu)
+        if self.__page == 1:
+            refID = self.getMostRecentRefID()
+            xml = getXML(self.getUrl(self._rowCount, refID))
+        else:
+            xml = getXML(self.getUrl(self._rowCount))
 
-        if not isinstance(lastDate, datetime):
-            if int(lastDate) > 0:
-                lastDate = datetime.fromtimestamp(lastDate)
-            else:
-                lastDate = self.getLastKnownDBDate()
+        cachedUntil = datetime.strptime(xml.find('cachedUntil').text, TIMEFORMAT)
+        self.redis.set('cachedUntil', cachedUntil)
+
+        knownRefID = self.redis.lrange('knownRefID',0,-1)
 
         for transaction in xml.findall('result/rowset/row'):
-            date = datetime.strptime(transaction.attrib['date'], TIMEFORMAT)
-            if lastDate is not None and date < lastDate:
+            refId = transaction.attrib['refID']
+            if refId in knownRefID:
+                self.__stop_paging = 1
                 continue
+            date = datetime.strptime(transaction.attrib['date'], TIMEFORMAT)
             amount = float(transaction.attrib['amount'])
             balance = float(transaction.attrib['balance'])
-            yield (date, amount, balance, self.cid)
+            yield (date, amount, balance, refId, self.cid)
 
 class CharacterHandler(object):
     def __init__(self, myConnection, rediscp, keyId, vCode):
+        self.mdblogger = logging.getLogger('__main__.MySQLdb')
         urlParameters = {'keyId': keyId, 'vCode': vCode}
         url = 'https://api.eveonline.com/account/Characters.xml.aspx'
         self.url = url + '?' + urlencode({'keyId': keyId,
@@ -164,7 +218,7 @@ class CharacterHandler(object):
             self.fetchCharacterIds()
             if len(self.knownIds) is 0:
                 logger = logging.getLogger('CharacterHandler')
-                logger.error('No character for api key.')
+                logger.error('No character for the selected api key.')
                 exit()
 
         self.walletHandler = WalletHandler(self.con, urlParameters, self.knownIds[0],
@@ -287,9 +341,14 @@ if __name__ == '__main__':
                                     path='/tmp/redis.sock')
         ch = CharacterHandler(myConnection=myCon, rediscp=pool, keyId=apiData['keyId'],
                               vCode=apiData['vCode'])
-        print(ch.walletHandler.insertXmlData())
+        rows = ch.walletHandler.insertXmlData()
+        while (rows == ch.walletHandler._rowCount):
+            ch.walletHandler.__page = 1
+            rows = ch.walletHandler.insertXmlData()
+
 
     except MySQLdb.Error, e:
+        mdblogger.critical(e.msg)
         raise e
     except:
         raise
