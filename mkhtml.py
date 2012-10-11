@@ -19,7 +19,7 @@ cId = 91439166
 con = MySQLdb.connect('localhost', 'test', 'testpwd', 'eveonline')
 cur = con.cursor(MySQLdb.cursors.DictCursor)
 cur.execute("""
-SELECT datetime, sum(amount) AS amount, balance
+SELECT datetime, SUM(amount) AS amount, MIN(balance) AS balance
 FROM wallet
 WHERE
 	cId=%s AND
