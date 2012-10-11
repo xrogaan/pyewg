@@ -85,11 +85,12 @@ class WalletHandler(object):
 
         # if no refID in redis, initialise
         if not self.redis.exists('knownRefID'):
+            print('redis refid empty, inserting shit from database')
             cur = self.con.cursor()
             cur.execute('SELECT refID FROM wallet ORDER BY refID ASC')
             data = cur.fetchall()
             for refID in data:
-                self.redis.rpush('knownRefID', refID)
+                self.redis.rpush('knownRefID', refID[0])
 
     def getUrl(self, rowCount, refID=None):
         url = "https://api.eveonline.com/char/WalletJournal.xml.aspx?{}"
@@ -114,8 +115,10 @@ class WalletHandler(object):
             items.append(item)
             refIDs.append(item[3])
         items.reverse()
-        cur = self.con.cursor()
+        if len(items) == 0:
+            return 0
 
+        cur = self.con.cursor()
         rowcount = cur.executemany("""INSERT INTO `wallet` (datetime, amount, balance, refID, cId, apiId)
                     VALUES (%s,%s,%s,%s,%s,%s)""", items)
         #rowcount = cur.rowcount
@@ -124,14 +127,17 @@ class WalletHandler(object):
         self.mdblogger.debug('{0} rows inserted'.format(rowcount))
 
         if not self.redis.exists('knownRefID'):
+            print('insert refid into redis')
             for refID in refIDs:
-                self.redis.rpush('knownRefID', refID)
+                self.redis.rpush('knownRefID', str(refID))
         else:
             t = self.redis.lrange('knownRefID', 0, -1)
             diff = list(set(t) - set(refIDs))
+            print('insert diff refid into redis')
+            print(diff)
             if len(diff) > 0:
                 for refID in diff:
-                    self.redis.rpush('knownRefID', refID)
+                    self.redis.rpush('knownRefID', str(refID))
 
         return rowcount
 
