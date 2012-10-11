@@ -116,20 +116,22 @@ class WalletHandler(object):
         items.reverse()
         cur = self.con.cursor()
 
-        cur.executemany("""INSERT INTO `wallet` (datetime, amount, balance, refID, cId, apiId)
+        rowcount = cur.executemany("""INSERT INTO `wallet` (datetime, amount, balance, refID, cId, apiId)
                     VALUES (%s,%s,%s,%s,%s,%s)""", items)
-        rowcount = cur.rowcount
+        #rowcount = cur.rowcount
         cur.close()
 
         self.mdblogger.debug('{0} rows inserted'.format(rowcount))
 
         if not self.redis.exists('knownRefID'):
-            self.redis.rpush('knownRefID', refIDs)
+            for refID in refIDs:
+                self.redis.rpush('knownRefID', refID)
         else:
             t = self.redis.lrange('knownRefID', 0, -1)
             diff = list(set(t) - set(refIDs))
             if len(diff) > 0:
-                self.redis.rpush('knownRefID', *diff)
+                for refID in diff:
+                    self.redis.rpush('knownRefID', refID)
 
         return rowcount
 
