@@ -1,7 +1,7 @@
 <!DOCTYPE HTML>
 <html>
 <head>
-    <title>My Webpage</title>
+    <title>{{ monthName }}'s transactions</title>
     
     <link type="text/css" rel="stylesheet" href="./jquery.jqplot.min.css">
 
@@ -19,7 +19,7 @@
     
 </head>
 <body>
-    <div id="chart" style="height:680px; width:1600px;"></div>
+    <div id="chart" style="height:680px; width:100%;"></div>
     
     <script type="text/javascript">
     $(document).ready(function(){
@@ -28,7 +28,7 @@
         var balan = [{% for item in transactions %}['{{ item.datetime }}', {{ item.balance }}]{% if not loop.last %},{% endif %}{% endfor %}];
 
         var plot1 = $.jqplot('chart', [balan, trans], {
-          title:'September\'s transactions',
+          title:'{{ monthName }}\'s transactions',
           seriesDefaults: {showMarker:false},
           series: [
               {fill: true, label: 'Balance'},
@@ -58,7 +58,7 @@
                   fontFamily:'Tahoma',
                   angle: -40
               },
-              min:'2012-09-01', 
+              min: '{{ minDate }}', 
               tickInterval:'6 days',
               drawMajorGridlines: false
             },
@@ -94,3 +94,4 @@
         
     </script>
 </body>
+</html>
