@@ -70,6 +70,38 @@ class apiHandler(object):
             self._id = cursor.fetchone()[0]
         cursor.close()
 
+    def list(self):
+        cursor = self.con.cursor()
+        cursor.execute("SELECT id, name, vCode FROM api_keys")
+        result = cursor.fetchall()
+        cursor.close()
+        return result
+
+    def fetch(self, name=None, fuzzy=False):
+        if name and fuzzy:
+            where = "WHERE name LIKE %%%s%%"
+        elif name and not fuzzy:
+            where = "WHERE name=%s"
+        else:
+            where = ""
+
+        sql = "SELECT id, name FROM api_keys" + where
+        cursor = self.con.cursor()
+        qr = cursor.execute(sql)
+        d = qr.fetchall()
+        cursor.close()
+        return d
+
+    def exists(self, keyId, vCode):
+        cursor = self.con.cursor()
+        qlen = cursor.execute("""SELECT id FROM api_keys WHERE keyId=%s AND vCode=%s""",
+                              (keyId, vCode))
+        cursor.close()
+        if qlen != 0:
+            return True
+        else:
+            return False
+
 class WalletHandler(object):
     def __init__(self, myConnection, urlArgs, characterId, apiId, rediscp):
         self.mdblogger = logging.getLogger('__main__.MySQLdb')
@@ -134,7 +166,6 @@ class WalletHandler(object):
             t = self.redis.lrange('knownRefID', 0, -1)
             diff = list(set(t) - set(refIDs))
             print('insert diff refid into redis')
-            print(diff)
             if len(diff) > 0:
                 for refID in diff:
                     self.redis.rpush('knownRefID', str(refID))
@@ -243,6 +274,13 @@ class CharacterHandler(object):
             self.knownIds.append(row[0])
         c.close()
 
+    def registerCharacterFromApi(self, characterName, characterId):
+        cursor = self.con.cursor()
+        sql = """INSERT INTO characters (characterName, characterId, apiId)
+                 VALUES (%s, %s, %s)"""
+        cursor.execute(sql)
+        cursor.close()
+
     def updateDbCharacterInfo(self, forced=False):
         cursor = self.con.cursor()
         try:
@@ -291,6 +329,7 @@ class CharacterHandler(object):
         for item in xmlData.findall('result/rowset/row'):
             yield {'characterName': item.attrib['name'],
                    'characterId': item.attrib['characterID']}
+        del(xmlData)
 
     def listDbCharacters(self):
         cur = self.con.cursor()
